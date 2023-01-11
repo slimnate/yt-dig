@@ -2,39 +2,9 @@ import { authOptions } from "./auth/[...nextAuth]";
 import { unstable_getServerSession } from "next-auth/next";
 import Surreal from 'surrealdb.js';
 import moment from "moment";
-import { fetchAuth, fetchAuthPaginated } from "../../lib/fetch";
+import { fetchAuth, fetchAuthPaginated, fetchChannelDetails, fetchSubscriptions, getChannelId } from "../../lib/fetch";
 
 const db = new Surreal('http://127.0.0.1:8000/rpc');
-
-const channelUrl = 'https://youtube.googleapis.com/youtube/v3/channels?part=id&mine=true';
-const getSubscriptionsUrl = (channelId) =>
-    `https://youtube.googleapis.com/youtube/v3/subscriptions?part=snippet%2CcontentDetails&maxResults=50&channelId=${channelId}`;
-const getChannelDetailsUrl = channelId =>
-    `https://youtube.googleapis.com/youtube/v3/channels?part=snippet%2CcontentDetails%2Cstatistics&id=${channelId}`;
-
-
-/**
- * Get the channel_id for the currently logged in Youtube user, will return
- * the value stored in session, or request it from the Youtube Data API if
- * session does not have a stored value.
- * 
- * @param {Object} session Web Session object
- * @returns {string} channel_id for the currently logged in Youtube account.
- */
-async function getChannelId(session) {
-    if(!session.channel_id) {
-        const res = await fetchAuth(channelUrl, session.accessToken);
-        const data = await res.json();
-        // console.log(data);
-        const channelId = data.items[0].id;
-        session.channel_id = channelId;
-        
-        return channelId;
-    }
-
-    console.log('using stored channel_id from session');
-    return session.channel_id;
-}
 
 /**
  * Search the database for an existing user based on `session.user.id`, returning
@@ -73,31 +43,6 @@ async function findOrCreateUser(session) {
 }
 
 /**
- * Fetch all the subscriptions for the current user from the Youtube Data API.
- * 
- * @param {Object} session Web session
- * @returns {[Object]} list of subscription objects
- */
-async function fetchSubscriptions(session) {
-    const subsUrl = getSubscriptionsUrl(session.channel_id);
-
-    function normalize(items) {
-        return items.map(item => {
-            return {
-                channelId: item.snippet.resourceId.channelId,
-                title: item.snippet.title,
-                description: item.snippet.description,
-                thumbnails: item.snippet.thumbnails
-            };
-        });
-    }
-
-    const subscriptions = await fetchAuthPaginated(subsUrl, session.accessToken);
-
-    return normalize(subscriptions);
-}
-
-/**
  * Check the last updated time for the current user, and if it was more than 24 hours ago,
  * request a new list of subscriptions from the Youtube API, update the database, and return
  * the new data.
@@ -121,10 +66,10 @@ async function getSubscriptions(session, user) {
         // console.log(newSubscriptions);
 
         // update all subscribed channels in the database
-        await updateOrCreateChannels(session, newSubscriptions);
+        const updatedChannelCount = await updateOrCreateChannels(session, newSubscriptions);
 
         // update user with references to subscribed channels
-        await updateSubscriptionsOnUser(user, newSubscriptions);
+        const updatedUserChannelCount = await updateSubscriptionsOnUser(user, newSubscriptions);
     }
 
     // TODO get subs from database
@@ -137,6 +82,13 @@ async function getSubscriptions(session, user) {
     return q[0].result[0].subscriptions;
 }
 
+/**
+ * Associate the provided `channels` with the provided `user` in the database
+ * 
+ * @param {object} user the user object to update
+ * @param {channel[]} channels list of channels to associate with user
+ * @return number of subs added to user
+ */
 async function updateSubscriptionsOnUser(user, channels) {
     // clear subscriptions so unsubbed channels will be pruned every update
     db.change(user.id, { subscriptions: [] });
@@ -161,26 +113,31 @@ async function updateSubscriptionsOnUser(user, channels) {
 
     console.log(`added ${added} subs to user`);
 
+    return added;
 }
 
+/**
+ * Update or create a collection of different channels in the database
+ * 
+ * @param {object} session current Next.js session
+ * @param {channel[]} subscriptions list of channels to update or create in the database
+ * @return number of channels updated
+ */
 async function updateOrCreateChannels(session, subscriptions) {
     console.log(`updating ${subscriptions.length} new channels...`);
     let updated = 0;
 
-    function mergeChannelDetails(channel, details) {
+    function merge(channel, details) {
         return {
             ...channel,
-            viewCount: details.statistics.viewCount,
-            subscriberCount: details.statistics.subscriberCount,
-            videoCount: details.statistics.videoCount,
-            uploadPlaylistId: details.contentDetails.relatedPlaylists.uploads,
-        }
+            ...details
+        };
     }
 
     for(const channel of subscriptions) {
         // console.log(channel);
         const details = await fetchChannelDetails(session, channel.channelId);
-        const channelDetails = mergeChannelDetails(channel, details);
+        const channelDetails = merge(channel, details);
 
         // console.log('channelDetails', channelDetails);
 
@@ -191,15 +148,7 @@ async function updateOrCreateChannels(session, subscriptions) {
     }
 
     console.log(`updated ${updated} channels successfully`);
-}
-
-async function fetchChannelDetails(session, channelId) {
-    const channelDetailsUrl = getChannelDetailsUrl(channelId);
-
-    const res = await fetchAuth(channelDetailsUrl, session.accessToken);
-    const data = await res.json();
-
-    return data.items[0];
+    return updated;
 }
 
 /**
