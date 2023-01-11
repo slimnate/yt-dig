@@ -2,6 +2,11 @@ This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next
 
 ## Getting Started
 
+Starting SurrealDB in dev mode:
+```bash
+surreal start -u root -p root -l info file:db
+```
+
 First, run the development server:
 
 ```bash
