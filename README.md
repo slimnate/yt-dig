@@ -4,7 +4,7 @@ This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next
 
 Starting SurrealDB in dev mode:
 ```bash
-surreal start -u root -p root -l info file:db
+surreal start -u root -p root -l debug file:db
 ```
 
 First, run the development server:
