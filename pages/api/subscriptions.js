@@ -13,7 +13,6 @@ import { merge } from "../../lib/object";
  * @returns list of subscriptions
  */
 async function updateSubscriptions(session, user) {
-    console.log(user);
     const now = moment(new Date());
     const oneDayAgo = now.subtract(1, 'day');
     const lastUpdate = moment(user.subscriptionsUpdatedAt);
@@ -28,6 +27,8 @@ async function updateSubscriptions(session, user) {
 
         // update all subscribed channels in the database
         const updatedChannelCount = await updateChannels(session, user, channels);
+
+        db.change(user.id, { requiresUpdate: false});
     }
 
     return await selectUserSubscriptions(user);
@@ -46,13 +47,10 @@ async function updateChannels(session, user, channels) {
 
     db.change(user.id, { subscriptions: [] });
 
-    for(const c of channels.slice(0, 1)) {
+    for(const c of channels) {
         // fetch and merge channel details
         const details = await fetchChannelDetails(session, c.channelId);
         const merged = merge(c, details);
-
-        // add videos property
-        merged.videos = [];
 
         // update/create channel record
         const channel = await updateOrCreate('channel', merged, merged.channelId);
@@ -66,7 +64,7 @@ async function updateChannels(session, user, channels) {
         // update videos
         const videosUpdatedCount = await updateVideos(session, channel, videos);
 
-        console.log(`added ${videosUpdatedCount} videos for channel`);
+        console.log(`added ${videosUpdatedCount} videos for ${channel.id}`);
 
         updated++;
     }
@@ -76,10 +74,10 @@ async function updateChannels(session, user, channels) {
 }
 
 async function updateVideos(session, channel, videos) {
-    console.log(`updating ${videos.length} videos...`);
+    // console.log(`updating ${videos.length} videos...`);
     let updated = 0;
 
-    db.change(channel.id, { subscriptions: [] });
+    db.change(channel.id, { videos: [] });
 
     for (const v of videos.slice(0, 1)) {
         // fetch video details
@@ -87,16 +85,11 @@ async function updateVideos(session, channel, videos) {
         const merged = merge(v, details);
 
         // update/create video
-        console.log('create video');
         const video = await updateOrCreate('video', merged, merged.videoId);
 
-        console.log('associate video');
-        // console.log(video);
         await associateRecordViaField(channel.id, 'videos', 'video', video.id);
         updated++;
     }
-
-    console.log(`updated ${updated} videos`);
 
     return updated;
 }
@@ -116,7 +109,7 @@ export default async function handler(req, res) {
     const user = await findOrCreateUser(session);
 
     // update subscriptions
-    const subscriptions =  await updateSubscriptions(session, user);
+    let subscriptions = await updateSubscriptions(session, user);
 
     // console.log('subscriptions', subscriptions);
     // console.log('user', user);
