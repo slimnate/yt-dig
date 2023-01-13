@@ -1,5 +1,8 @@
 This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
 
+## Issues:
+https://stackoverflow.com/a/72675051 - some caching issues with tailwind and next, if this happens delete `.next` folder and restart server
+
 ## Getting Started
 
 Starting SurrealDB in dev mode:
