@@ -2,7 +2,7 @@ import { authOptions } from "./auth/[...nextAuth]";
 import { unstable_getServerSession } from "next-auth/next";
 import moment from "moment";
 import { fetchChannelDetails, fetchPlaylistVideos, fetchSubscriptions, fetchVideoDetails, getChannelId } from "../../lib/fetch";
-import { associateRecordViaField, db, findOrCreateUser, init, selectUserSubscriptions, updateOrCreate } from "../../lib/database";
+import { associateRecordViaField, db, findOrCreateUser, init, relate, selectUserSubscriptions, updateOrCreate } from "../../lib/database";
 import { merge } from "../../lib/object";
 
 /**
@@ -28,7 +28,7 @@ async function updateSubscriptions(session, user) {
         // update all subscribed channels in the database
         const updatedChannelCount = await updateChannels(session, user, channels);
 
-        db.change(user.id, { requiresUpdate: false});
+        await db.change(user.id, { requiresUpdate: false});
     }
 
     return await selectUserSubscriptions(user);
@@ -45,7 +45,7 @@ async function updateChannels(session, user, channels) {
     console.log(`updating ${channels.length} channels...`);
     let updated = 0;
 
-    db.change(user.id, { subscriptions: [] });
+    await db.change(user.id, { subscriptions: [] });
 
     for(const c of channels) {
         // fetch and merge channel details
@@ -53,19 +53,47 @@ async function updateChannels(session, user, channels) {
         const merged = merge(c, details);
 
         // update/create channel record
-        const channel = await updateOrCreate('channel', merged, merged.channelId);
+        const {created, data: channel} = await updateOrCreate('channel', merged, merged.channelId);
 
         // associate channel with user
         await associateRecordViaField(user.id, 'subscriptions', 'channel', channel.id);
 
-        // fetch videos
-        const videos = await fetchPlaylistVideos(session, channel.uploadPlaylistId);
+        // check if channel videos need to be updated
+        let needsUpdate = false;
 
-        // update videos
-        const videosUpdatedCount = await updateVideos(session, channel, videos);
+        const oneDayAgo = moment(new Date()).subtract(1, 'day');
+        if(channel.updatedAt && moment(channel.updatedAt).isBefore(oneDayAgo)) {
+            console.log('needs update - time');
+            needsUpdate = true;
+        }
 
-        console.log(`added ${videosUpdatedCount} videos for ${channel.id}`);
+        if(created) {
+            console.log('needs update - created');
+            needsUpdate = true;
+        }
 
+        // update videos for channel when data is stale
+        if(needsUpdate) {
+            // fetch videos
+            const videos = await fetchPlaylistVideos(session, channel.uploadPlaylistId);
+
+            // update videos
+            const videosUpdatedCount = await updateVideos(session, channel, videos);
+
+            const updatedAt = new Date();
+            const latestUpload = videos.filter(v => v.position == 0)[0];
+
+            // update the last update and latest upload times for the channel
+            await db.change(channel.id, {
+                updatedAt: new Date(),
+                latestUploadAt: latestUpload.publishedAt,
+            });
+
+            // relate the latestUpload to the video record in the database
+            await relate(channel.id, 'latestUpload', 'video', latestUpload.videoId);
+
+            console.log(`added ${videosUpdatedCount} videos for ${channel.id}`);
+        }
         updated++;
     }
 
@@ -77,7 +105,7 @@ async function updateVideos(session, channel, videos) {
     // console.log(`updating ${videos.length} videos...`);
     let updated = 0;
 
-    db.change(channel.id, { videos: [] });
+    await db.change(channel.id, { videos: [] });
 
     for (const v of videos.slice(0, 1)) {
         // fetch video details
@@ -85,7 +113,7 @@ async function updateVideos(session, channel, videos) {
         const merged = merge(v, details);
 
         // update/create video
-        const video = await updateOrCreate('video', merged, merged.videoId);
+        const {created, data: video} = await updateOrCreate('video', merged, merged.videoId);
 
         await associateRecordViaField(channel.id, 'videos', 'video', video.id);
         updated++;
